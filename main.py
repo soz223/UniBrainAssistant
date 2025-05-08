@@ -243,38 +243,138 @@ KNOWLEDGE_TOOL=Tool(name="ask_unibrain_paper",func=ask_knowledge,description="An
 # ╭────────────────── Inference pipeline ────────────────────────────────────╮
 CARD=dict
 
-def run_pipeline(inp:Path,work:Path)->list[CARD]:
-    if None in (MODEL,REF_TPL,REF_GM,REF_AAL): raise RuntimeError("Model/templates not ready")
-    mov=nii_to_torch(inp)
-    st.info("Running UniBrain …"); t0=time.time()
+from pathlib import Path
+import time
+import torch
+import streamlit as st
+
+# CARD alias already defined elsewhere
+# MODEL, REF_TPL, REF_GM, REF_AAL, nii_to_torch, save_tensor all assumed imported
+
+def run_pipeline(
+    inp: Path,
+    work: Path,
+    steps: list[str] | None = None,    # <-- new param
+) -> list[CARD]:
+    if None in (MODEL, REF_TPL, REF_GM, REF_AAL):
+        raise RuntimeError("Model/templates not ready")
+
+    # default: run all steps
+    all_steps = ["Extraction", "Registration", "Segmentation", "Parcellation", "Network", "Classification"]
+    if steps is None:
+        steps = all_steps
+
+    mov = nii_to_torch(inp)
+    st.info("Running UniBrain …")
+    t0 = time.time()
     with torch.no_grad():
-        (striped,masks,warped,theta,theta_i,am_mov,am_ref2,aal_mov,aal_ref2,adj,logits)=MODEL(REF_TPL,mov,REF_GM,REF_AAL,if_train=False)
-    st.success(f"Done in {time.time()-t0:.1f}s")
+        (
+            striped,
+            masks,
+            warped,
+            theta,
+            theta_i,
+            am_mov,
+            am_ref2,
+            aal_mov,
+            aal_ref2,
+            adj,
+            logits,
+        ) = MODEL(REF_TPL, mov, REF_GM, REF_AAL, if_train=False)
+    st.success(f"Done in {time.time() - t0:.1f}s")
 
-    nii_dir,pt_dir=(work/"nii",work/"pt"); nii_dir.mkdir(parents=True,exist_ok=True); pt_dir.mkdir(exist_ok=True)
-    cards: list[CARD]=[]
-    def nii_card(t,name,note=""):
-        out=nii_dir/f"{name}.nii.gz"; save_tensor(t,out)
-        cards.append({"step":name.replace("_"," ").title(),"nifti_path":out,"explanation":note}); return out
+    nii_dir, pt_dir = (work / "nii", work / "pt")
+    nii_dir.mkdir(parents=True, exist_ok=True)
+    pt_dir.mkdir(exist_ok=True)
 
-    prob=torch.softmax(logits,1)[0]; cls,conf=int(prob.argmax()),float(prob.max())
-    torch.save(logits.cpu(),pt_dir/"logits.pt")
-    cards.append({"step":"Classification","metrics":{"class":cls,"probability":conf},"explanation":f"Predicted **{cls}** (p={conf:.3f})","file_path":pt_dir/"logits.pt"})
+    cards: list[CARD] = []
 
-    nii_card(torch.argmax(am_mov,1),"am_seg","Anatomical mask")
-    nii_card(torch.argmax(aal_mov,1),"aal_seg","AAL labels")
-    nii_card(am_ref2,"am_ref2mov","Template ANAT→input")
-    nii_card(aal_ref2,"aal_ref2mov","Template AAL→input")
+    def nii_card(tensor, name, note=""):
+        out = nii_dir / f"{name}.nii.gz"
+        save_tensor(tensor, out)
+        cards.append({
+            "step": name.replace("_", " ").title(),
+            "nifti_path": out,
+            "explanation": note,
+        })
+        return out
 
-    for i,(m,s) in enumerate(zip(masks,striped),1):
-        nii_card(m,f"mask{i}"); nii_card(s,f"strip{i}")
-    for i,w in enumerate(warped,1):
-        nii_card(w,f"warped{i}")
+    # Classification
+    if "Classification" in steps:
+        prob = torch.softmax(logits, 1)[0]
+        cls, conf = int(prob.argmax()), float(prob.max())
+        torch.save(logits.cpu(), pt_dir / "logits.pt")
+        cards.append({
+            "step": "Classification",
+            "metrics": {"class": cls, "probability": conf},
+            "explanation": f"Predicted **{cls}** (p={conf:.3f})",
+            "file_path": pt_dir / "logits.pt",
+        })
 
-    for lbl,obj in {"theta":theta,"theta_inv":theta_i,"adj":adj}.items():
-        p=pt_dir/f"{lbl}.pt"; torch.save(obj,p); cards.append({"step":lbl,"file_path":p})
+    # Segmentation / Parcellation
+    if "Segmentation" in steps:
+        nii_card(torch.argmax(am_mov, 1), "am_seg", "Anatomical mask")
+    if "Parcellation" in steps:
+        nii_card(torch.argmax(aal_mov, 1), "aal_seg", "AAL labels")
+
+    # Registration details
+    if "Registration" in steps:
+        nii_card(am_ref2, "am_ref2mov", "Template ANAT→input")
+        nii_card(aal_ref2, "aal_ref2mov", "Template AAL→input")
+        for i, w in enumerate(warped, 1):
+            nii_card(w, f"warped{i}")
+
+    # Extraction masks
+    if "Extraction" in steps:
+        for i, (m, s) in enumerate(zip(masks, striped), 1):
+            nii_card(m, f"mask{i}")
+            nii_card(s, f"strip{i}")
+
+    # Brain network (adjacency)
+    if "Network" in steps:
+        adj_path = pt_dir / "adj.pt"
+        torch.save(adj, adj_path)
+        cards.append({
+            "step": "Network",
+            "file_path": adj_path,
+            "explanation": "Adjacency matrix",
+        })
 
     return cards
+
+
+# def run_pipeline(inp:Path,work:Path)->list[CARD]:
+#     if None in (MODEL,REF_TPL,REF_GM,REF_AAL): raise RuntimeError("Model/templates not ready")
+#     mov=nii_to_torch(inp)
+#     st.info("Running UniBrain …"); t0=time.time()
+#     with torch.no_grad():
+#         (striped,masks,warped,theta,theta_i,am_mov,am_ref2,aal_mov,aal_ref2,adj,logits)=MODEL(REF_TPL,mov,REF_GM,REF_AAL,if_train=False)
+#     st.success(f"Done in {time.time()-t0:.1f}s")
+
+#     nii_dir,pt_dir=(work/"nii",work/"pt"); nii_dir.mkdir(parents=True,exist_ok=True); pt_dir.mkdir(exist_ok=True)
+#     cards: list[CARD]=[]
+#     def nii_card(t,name,note=""):
+#         out=nii_dir/f"{name}.nii.gz"; save_tensor(t,out)
+#         cards.append({"step":name.replace("_"," ").title(),"nifti_path":out,"explanation":note}); return out
+
+#     prob=torch.softmax(logits,1)[0]; cls,conf=int(prob.argmax()),float(prob.max())
+#     torch.save(logits.cpu(),pt_dir/"logits.pt")
+#     cards.append({"step":"Classification","metrics":{"class":cls,"probability":conf},"explanation":f"Predicted **{cls}** (p={conf:.3f})","file_path":pt_dir/"logits.pt"})
+
+#     nii_card(torch.argmax(am_mov,1),"am_seg","Anatomical mask")
+#     nii_card(torch.argmax(aal_mov,1),"aal_seg","AAL labels")
+#     nii_card(am_ref2,"am_ref2mov","Template ANAT→input")
+#     nii_card(aal_ref2,"aal_ref2mov","Template AAL→input")
+
+#     for i,(m,s) in enumerate(zip(masks,striped),1):
+#         nii_card(m,f"mask{i}"); nii_card(s,f"strip{i}")
+#     for i,w in enumerate(warped,1):
+#         nii_card(w,f"warped{i}")
+
+#     for lbl,obj in {"theta":theta,"theta_inv":theta_i,"adj":adj}.items():
+#         p=pt_dir/f"{lbl}.pt"; torch.save(obj,p); cards.append({"step":lbl,"file_path":p})
+
+#     return cards
 
 RUN_TOOL=Tool(name="run_unibrain_inference",description="Run/rerun UniBrain on uploaded file",func=lambda _: "❗ No file" if "upload_path" not in st.session_state else _run_unibrain())
 
@@ -435,6 +535,8 @@ def show_input_preview(in_path: Path) -> None:
     st.plotly_chart(fig, use_container_width=True, key="vol_input")
 
 
+
+
 # def vol_fig(arr:np.ndarray):
 #     ds=st.radio("Quality (↓ faster)",[4,3,2,1],index=1,horizontal=True)
 #     arr=arr[::ds,::ds,::ds]
@@ -498,16 +600,40 @@ def show_input_preview(in_path: Path) -> None:
     # st.plotly_chart(vol_fig(vol), use_container_width=True)
     st.plotly_chart(vol_fig(vol, ds=2, colourscale="Greys"), use_container_width=True)
 
+
+
 # ---------------------------------------------------------------------------#
 # 3. “Run UniBrain” 按钮                                                      #
 # ---------------------------------------------------------------------------#
 def run_inference_button(in_path: Path) -> None:
-    if st.button("Run UniBrain", disabled=st.session_state.pipeline_done):
+    if st.button("Run UniBrain", disabled=st.session_state.pipeline_done, key="run_unibrain"):
         st.session_state.cards = run_pipeline(
             in_path, Path(st.session_state.work_dir)
         )
         st.session_state.pipeline_done = True
         st.rerun()
+
+
+# 1) Let user select which steps to run
+all_steps = ["Extraction", "Registration", "Segmentation",
+             "Parcellation", "Network", "Classification"]
+st.sidebar.header("Pipeline Options")
+selected_steps = st.sidebar.multiselect(
+    "Select UniBrain steps:",
+    options=all_steps,
+    default=all_steps
+)
+
+# 2) Run button
+if st.sidebar.button("Run UniBrain", disabled=st.session_state.pipeline_done):
+    # call with selected_steps
+    in_path = Path(st.session_state.upload_path)
+    work_dir = in_path.parent
+    st.session_state.cards = run_pipeline(in_path, work_dir, selected_steps)
+    st.session_state.pipeline_done = True
+    st.experimental_rerun()
+
+
 
 # ---------------------------------------------------------------------------#
 # 4. 结果展示：折叠卡片 + 下载                                                #
@@ -615,7 +741,7 @@ def show_outputs() -> None:
 in_path = handle_upload()
 if in_path:
     show_input_preview(in_path)
-    run_inference_button(in_path)
+    # run_inference_button(in_path)
     show_outputs()
 
 

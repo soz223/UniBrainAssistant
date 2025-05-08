@@ -38,6 +38,28 @@ warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
+# ------------------------------------------------------------------#
+# Session‑state defaults                                            #
+# ------------------------------------------------------------------#
+DEFAULT_STEPS = [
+    "Extraction", "Registration", "Segmentation",
+    "Parcellation", "Network", "Classification",
+]
+if "selected_steps" not in st.session_state:
+    st.session_state.selected_steps = DEFAULT_STEPS.copy()
+if "pipeline_done" not in st.session_state:
+    st.session_state.pipeline_done = False
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+
+# cross-version rerun helper
+def _rerun():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
 # ── utils_adj.py (或直接放到现有文件上方) ─────────────────────────────
 import torch, networkx as nx
 @st.cache_data
@@ -545,7 +567,7 @@ def show_input_preview(in_path: Path) -> None:
 #     return go.Figure(go.Volume(x=x.ravel(),y=y.ravel(),z=z.ravel(),value=arr.ravel(),isomin=imin,isomax=imax,opacity=0.2,opacityscale=[[0,0],[0.1,0.05],[0.3,0.1],[0.6,0.3],[0.8,0.5],[1,0.7]],surface_count=17,colorscale="Greys"))
 
 # ╭────────────────── Streamlit main ────────────────────────────────────────╮
-st.set_page_config(page_title="UniBrain Agent",layout="centered")
+st.set_page_config(page_title="UniBrain Agent",layout="centered", initial_sidebar_state="collapsed")
 
 st.title("🧠 UniBrain Assistant")
 for k,v in {"messages":[],"pipeline_done":False}.items(): st.session_state.setdefault(k,v)
@@ -617,21 +639,52 @@ def run_inference_button(in_path: Path) -> None:
 # 1) Let user select which steps to run
 all_steps = ["Extraction", "Registration", "Segmentation",
              "Parcellation", "Network", "Classification"]
-st.sidebar.header("Pipeline Options")
-selected_steps = st.sidebar.multiselect(
-    "Select UniBrain steps:",
-    options=all_steps,
-    default=all_steps
-)
 
-# 2) Run button
-if st.sidebar.button("Run UniBrain", disabled=st.session_state.pipeline_done):
-    # call with selected_steps
-    in_path = Path(st.session_state.upload_path)
-    work_dir = in_path.parent
-    st.session_state.cards = run_pipeline(in_path, work_dir, selected_steps)
-    st.session_state.pipeline_done = True
-    st.experimental_rerun()
+# sidebar default close
+
+with st.sidebar.expander("⚙️ Pipeline steps", expanded=False):
+    st.write("Select which stages to run:")
+    st.session_state.selected_steps = st.multiselect(
+        "Stages",
+        DEFAULT_STEPS,
+        default=st.session_state.selected_steps,
+        key="steps_select",
+    )
+
+selected_steps = st.session_state.selected_steps
+
+# # 2) Run button
+# if st.sidebar.button("Run UniBrain", disabled=st.session_state.pipeline_done):
+#     # call with selected_steps
+#     in_path = Path(st.session_state.upload_path)
+#     work_dir = in_path.parent
+#     st.session_state.cards = run_pipeline(in_path, work_dir, selected_steps)
+#     st.session_state.pipeline_done = True
+#     st.rerun()
+
+# ───────────────── Sidebar run button ─────────────────────────
+if st.sidebar.button(
+        "Run UniBrain",
+        disabled=st.session_state.pipeline_done,
+        key="sidebar_run"):
+    if "upload_path" not in st.session_state:
+        st.error("❗ Please upload a file first.")
+    else:
+        in_path  = Path(st.session_state.upload_path)
+        work_dir = in_path.parent
+
+        st.session_state.cards = run_pipeline(
+            in_path,
+            work_dir,
+            st.session_state.selected_steps        # ← pass steps
+        )
+        st.session_state.pipeline_done = True
+
+        # 1️⃣ append friendly summary *before* rerun
+        summary = "✅ Finished running: " + ", ".join(st.session_state.selected_steps)
+        st.session_state.messages.append({"role": "assistant", "content": summary})
+
+        _rerun()   # ← do this last
 
 
 
@@ -734,6 +787,96 @@ def show_outputs() -> None:
 
             
 
+CMD_SYS_PROMPT = """
+You are a controller for the UniBrain Streamlit app. 
+Your ONLY job is to examine the user's sentence and decide
+• whether it requests skipping, enabling, or resetting pipeline steps.
+Valid step names: Extraction, Registration, Segmentation, Parcellation, Network, Classification.
+
+Treat these patterns all as “skip <Step>” commands:
+  - “skip segmentation”
+  - “without segmentation”
+  - “no segmentation”
+  - “preprocessing without segmentation”
+  - “do the preprocessing without segmentation”
+  - “run pipeline without segmentation”
+
+OUTPUT RULES:
+1. If the user wants to skip a step, output EXACT JSON: {"action":"skip","step":"<Step>"}
+2. If the user wants to enable a step, output EXACT JSON: {"action":"enable","step":"<Step>"}
+3. If the user wants to reset everything, output EXACT JSON: {"action":"reset"}
+4. Otherwise output the literal word: none
+
+Do NOT wrap JSON in markdown; no extra text.
+""".strip()
+
+
+
+from openai import OpenAI
+import re, json, streamlit as st
+from typing import Optional, Tuple
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+DEFAULT_STEPS = [
+    "Extraction","Registration","Segmentation",
+    "Parcellation","Network","Classification"
+]
+
+def regex_detect(cmd: str) -> Optional[Tuple[str,str]]:
+    cmd = cmd.lower().strip()
+    # reset
+    if "reset steps" in cmd or "reset pipeline" in cmd:
+        return ("reset","")
+    # skip patterns
+    m = re.match(r"(skip|without|no)\s+(\w+)", cmd)
+    if m:
+        action, step = m.groups()
+        if action in ("without","no"):
+            action = "skip"
+        return (action, step.capitalize())
+    # enable
+    m = re.match(r"(enable|turn on)\s+(\w+)", cmd)
+    if m:
+        action, step = m.groups()
+        return ("enable", step.capitalize())
+    return None
+
+def llm_detect_command(text: str) -> Optional[Tuple[str,str]]:
+    try:
+        resp = client.chat.completions.create(
+            model       = "gpt-3.5-turbo-0125",
+            messages    = [
+                {"role":"system","content":CMD_SYS_PROMPT},
+                {"role":"user",  "content":text},
+            ],
+            max_tokens  = 20,
+            temperature = 0,
+        )
+        out = resp.choices[0].message.content.strip()
+        if out == "none":
+            return None
+        data = json.loads(out)
+        action = data.get("action")
+        if action == "reset":
+            return ("reset","")
+        if action in ("skip","enable") and data.get("step"):
+            return (action, data["step"].capitalize())
+    except Exception as e:
+        st.warning(f"Cmd-parser LLM error: {e}")
+    return None
+
+def detect_command(text: str) -> Optional[Tuple[str,str]]:
+    # 1) try regex
+    cmd = regex_detect(text)
+    if cmd:
+        return cmd
+    # 2) fallback to LLM
+    return llm_detect_command(text)
+
+
+
 
 # ---------------------------------------------------------------------------#
 # 🏃 主流程：一步一函数                                                       #
@@ -745,46 +888,104 @@ if in_path:
     show_outputs()
 
 
-# ╭────────────────── Chat area ──────────────────────────────────────────────╮
-st.divider(); st.subheader("Chat with UniBrain Assistant")
+
+
+
+
+
+
+
+
+
+# ╭────────────────── Chat area ─────────────────────────────────────────╮
+st.divider()
+st.subheader("Chat with UniBrain Assistant")
+
+# 0) Render history
 for m in st.session_state.messages:
-    with st.chat_message(m["role"]): st.markdown(m["content"])
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
 
-if agent:
-    if q:=st.chat_input("Ask about UniBrain …"):
-        st.session_state.messages.append({"role":"user","content":q}); st.rerun()
-
-    if agent and st.session_state.messages and st.session_state.messages[-1]["role"]=="user":
-        q   = st.session_state.messages[-1]["content"]
-        ctx = (f"File: {st.session_state.upload_path}"
-            if "upload_path" in st.session_state else "No file loaded.")
-
-        # 1) build the chat_history as before
-        hist=[]
-        msgs=st.session_state.messages[:-1]
-        for i in range(0, len(msgs)-1, 2):
-            if msgs[i]["role"]=="user" and msgs[i+1]["role"]=="assistant":
-                hist += [
-                HumanMessage(content=msgs[i]["content"]),
-                AIMessage   (content=msgs[i+1]["content"])
-                ]
-
-        # 2) ALWAYS prepend your SYSTEM_PROMPT as a SystemMessage
-        full_history = [ SystemMessage(content=SYSTEM_PROMPT) ] + hist
-
-        # 3) Now send your user as the last message
-        full_history.append( HumanMessage(content=f"{q}\n\nContext: {ctx}") )
-
-        with st.chat_message("assistant"), st.spinner("Thinking…"):
-            try:
-                # use agent.invoke so tools still work
-                result = agent.invoke({
-                    "input": full_history  # passes in messages directly
-                })
-                out = result.get("output", str(result))
-            except Exception as e:
-                out = f"Agent error: {e}"
-            st.session_state.messages.append({"role":"assistant","content":out})
-            st.rerun()
+# 1) Show single input box only when no pending reply
+waiting_reply = (
+    st.session_state.messages
+    and st.session_state.messages[-1]["role"] == "user"
+)
+if not waiting_reply and agent:
+    user_text = st.chat_input(
+        "Ask about UniBrain …",
+        key="main_chat_input"
+    )
 else:
+    user_text = None
+
+# 2) Detect & handle commands vs normal chat
+if user_text:
+    cmd = detect_command(user_text)
+    # st.write(f"🔍 Debug: detect_command -> {cmd}")
+    if cmd:
+        action, step = cmd
+        # ── Update the selected_steps ─────────────────────────────
+        if action == "reset":
+            st.session_state.selected_steps = DEFAULT_STEPS.copy()
+            ack = "🔄 Steps reset to all enabled."
+        elif action == "skip":
+            st.session_state.selected_steps = [
+                s for s in st.session_state.selected_steps if s != step
+            ]
+            ack = f"⏭️ **{step}** skipped."
+        else:  # enable
+            if step not in st.session_state.selected_steps:
+                st.session_state.selected_steps.append(step)
+            ack = f"✅ **{step}** enabled."
+
+        # ── Immediately re-run the pipeline ─────────────────────────
+        st.session_state.pipeline_done = False
+        # you will need `Path` imported at top: from pathlib import Path
+        in_path  = Path(st.session_state.upload_path)
+        work_dir = in_path.parent
+        st.session_state.cards = run_pipeline(
+            in_path, work_dir, st.session_state.selected_steps
+        )
+        st.session_state.pipeline_done = True
+
+        # ── Echo back to the chat UI ───────────────────────────────
+        st.session_state.messages.append({"role":"user",      "content":user_text})
+        st.session_state.messages.append({"role":"assistant", "content":ack})
+
+
+        _rerun()    
+    else:
+        # normal chat → queue LLM, *do not* add summary yet
+        st.session_state.messages.append({"role": "user", "content": user_text})
+        _rerun()
+
+
+# 3) If waiting_reply, call agent exactly once
+if waiting_reply and agent:
+    question = st.session_state.messages[-1]["content"]
+    ctx      = f"File: {st.session_state.upload_path}" if "upload_path" in st.session_state else "No file."
+
+    # build history for agent
+    hist = []
+    for m in st.session_state.messages[:-1]:
+        if m["role"] == "user":
+            hist.append(HumanMessage(content=m["content"]))
+        else:
+            hist.append(AIMessage   (content=m["content"]))
+
+    full_history = [SystemMessage(content=SYSTEM_PROMPT)] + hist
+    full_history.append(HumanMessage(content=f"{question}\n\nContext: {ctx}"))
+
+    with st.chat_message("assistant"), st.spinner("Thinking…"):
+        try:
+            res = agent.invoke({"input": full_history})
+            answer = res.get("output", str(res))
+        except Exception as e:
+            answer = f"Agent error: {e}"
+
+        st.session_state.messages.append({"role":"assistant","content":answer})
+        _rerun()
+
+elif not agent:
     st.info("Agent disabled (no API key)")

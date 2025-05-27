@@ -1,7 +1,6 @@
 # 🧠 UniBrain‑Assistant
 
-A Streamlit + LangChain demo that turns a **single‑file brain MRI** into a
-conversational, end‑to‑end analysis workflow:
+A Streamlit + LangChain demo that turns a **single‑file brain MRI** into a conversational, end‑to‑end analysis workflow:
 
 * skull‑stripping → affine registration → tissue segmentation → AAL
   parcellation → graph construction → disease classification
@@ -13,14 +12,28 @@ conversational, end‑to‑end analysis workflow:
 
 ---
 
+## 🖼️ Demo
+
+<p align="center">
+  <img src="./figures/demo1.png" alt="Upload & preprocessing" width="30%"/>
+  <img src="./figures/demo2.png" alt="Interactive slice viewer" width="30%"/>
+  <img src="./figures/demo3.png" alt="3‑D volumetric viewer" width="30%"/>
+</p>
+<p align="center">
+  <img src="./figures/demo4.png" alt="Graph visualisation" width="30%"/>
+  <img src="./figures/demo5.png" alt="Chat‑driven control" width="30%"/>
+</p>
+
+---
+
 ## ✨ Key Features
 
-| UI / UX                                     | Details                                                                                                     |
+| UI / UX                                     | Details                                                                                                     |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **Drag‑&‑drop NIfTI** (`.nii` / `.nii.gz`)  | Files stored under `uploads/<8‑char‑id>/` for easy cleanup                                                  |
+| **Drag‑&‑drop NIfTI** (`.nii` / `.nii.gz`)  | Files stored under `uploads/<8‑char‑id>/` for easy cleanup                                                  |
 | **Smart reruns**                            | Upload survives every Streamlit rerun – viewers and cards never disappear                                   |
 | **Collapsible output cards**                | Keep the page tidy; expand only what you need                                                               |
-| **2‑D / 3‑D switch**                        | Fast slice slider **or** Plotly volume (quality slider + colour‑map)                                        |
+| **2‑D / 3‑D switch**                        | Fast slice slider **or** Plotly volume (quality slider + colour‑map)                                        |
 | **Adjacency exploration**                   | Toggle *heat‑map* or *interactive network graph* (edge‑density slider)                                      |
 | **Download buttons everywhere**             | NIfTI (`.nii.gz`) or raw PyTorch (`.pt`)                                                                    |
 | **Sidebar “⚙️ Pipeline steps”** selector    | Tick/untick *Extraction, Registration, …* before running                                                    |
@@ -31,7 +44,7 @@ conversational, end‑to‑end analysis workflow:
 
 ## 🏗️ Project Layout
 
-```
+```text
 ├─ app.py                  ← this Streamlit app (single‑file, self‑contained)
 ├─ assets/
 │  ├─ tpl_img.npy          ← template volume
@@ -43,6 +56,12 @@ conversational, end‑to‑end analysis workflow:
 ├─ unibrain.pdf            ← paper for RAG
 └─ extra_knowledge.txt     ← any supplementary text you like
 ```
+
+### 🔬 Method Structure
+
+<p align="center">
+  <img src="./figures/structure.png" alt="End‑to‑end processing pipeline" width="70%"/>
+</p>
 
 > **No UniBrain weights?**
 > If `assets/unibrain.pth` is missing the app loads a **dummy stub** so you can
@@ -61,7 +80,7 @@ export OPENAI_API_KEY="sk-..."                         # GPT‑4o‑mini / 3.5�
 streamlit run app.py
 ```
 
-Open [http://localhost:8501](http://localhost:8501)  → upload a NIfTI → pick steps → **Run**.
+Open [http://localhost:8501](http://localhost:8501) → upload a NIfTI → pick steps → **Run**.
 Then talk to your data:
 
 ```
@@ -110,13 +129,12 @@ Internally the message goes through:
 
 ## 📝 Contributing
 
-PRs are welcome!  Interesting directions:
+PRs are welcome! Interesting directions:
 
 * plug‑in **non‑rigid** registration back‑ends
 * support **multi‑modal** inputs (fMRI + DTI)
 * switch 3‑D viewer to `vtk.js` for volume clipping planes
 * add **batch mode** & progress bars
-
 
 ---
 

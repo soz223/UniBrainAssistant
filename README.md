@@ -3,7 +3,7 @@
 
 **UniBrain‑Assistant** is an open-source, browser-based platform that integrates end-to-end deep learning into a fully conversational workflow for structural brain MRI analysis.
 
-**Try Me - One Click, Done Quick!**
+### 🚀 Try Me - One Click, Done Quick!
 
 You can drop in a NIfTI file, watch every preprocessing step unfold in real time, explore the resulting connectome interactively, and ask questions in plain English or any natural languages — all without leaving your web browser.
 

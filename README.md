@@ -117,6 +117,7 @@ PRs are welcome!  Interesting directions:
 * switch 3‑D viewer to `vtk.js` for volume clipping planes
 * add **batch mode** & progress bars
 
+
 ---
 
 ## 📄 License

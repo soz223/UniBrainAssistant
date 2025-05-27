@@ -10,19 +10,6 @@ A Streamlit + LangChain demo that turns a **single‑file brain MRI** into a
   `“run the pipeline without segmentation”`, `“enable network”`
 * **RAG‑powered Q & A** over your outputs **and** the UniBrain paper itself
 
----
-
-## 🖼️ Demo
-
-<p align="center">
-  <img src="./figures/demo1.png" alt="Upload & preprocessing" width="30%"/>
-  <img src="./figures/demo2.png" alt="Interactive slice viewer" width="30%"/>
-  <img src="./figures/demo3.png" alt="3‑D volumetric viewer" width="30%"/>
-</p>
-<p align="center">
-  <img src="./figures/demo4.png" alt="Graph visualisation" width="30%"/>
-  <img src="./figures/demo5.png" alt="Chat‑driven control" width="30%"/>
-</p>
 
 ---
 
@@ -126,6 +113,22 @@ Internally the message goes through:
 2. If unresolved → **GPT‑4o‑mini** prompt (`CMD_SYS_PROMPT`) → JSON response.
 
 ---
+
+
+---
+
+## 🖼️ Demo
+
+<p align="center">
+  <img src="./figures/demo1.png" alt="Upload & preprocessing" width="100%"/>
+  <img src="./figures/demo2.png" alt="Interactive slice viewer" width="100%"/>
+  <img src="./figures/demo3.png" alt="3‑D volumetric viewer" width="100%"/>
+</p>
+<p align="center">
+  <img src="./figures/demo4.png" alt="Graph visualisation" width="100%"/>
+  <img src="./figures/demo5.png" alt="Chat‑driven control" width="100%"/>
+</p>
+
 
 ## 📝 Contributing
 

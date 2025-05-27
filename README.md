@@ -144,9 +144,28 @@ PRs are welcome! Interesting directions:
 * switch 3‑D viewer to `vtk.js` for volume clipping planes
 * add **batch mode** & progress bars
 
+
+
+---
+
+## 📚 Citation
+
+Please cite the following work if UniBrain‑Assistant contributes to your research:
+
+```bibtex
+@article{su2025end,
+  title={End-to-End Deep Learning for Structural Brain Imaging: A Unified Framework},
+  author={Su, Yao and Han, Keqi and Zeng, Mingjie and Sun, Lichao and Zhan, Liang and Yang, Carl and He, Lifang and Kong, Xiangnan},
+  journal={arXiv preprint arXiv:2502.18523},
+  year={2025}
+}
+```
+
+
 ---
 
 ## 📄 License
 
 MIT – do whatever you want, but please cite the UniBrain paper if you use the
 model for research.
+

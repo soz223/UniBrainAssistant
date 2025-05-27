@@ -1,5 +1,6 @@
 # 🧠 UniBrain‑Assistant
 
+
 **UniBrain‑Assistant** is an open-source, browser-based platform that integrates end-to-end deep learning into a fully conversational workflow for structural brain MRI analysis.
 
 Drop in a NIfTI file, watch every preprocessing step unfold in real time, explore the resulting connectome interactively, and ask questions in plain English or any natural languages — all without leaving your web browser.
@@ -12,6 +13,8 @@ It pairs Streamlit’s reactive UI with LangChain’s tool‑calling so you can 
 * fully **interactive**: 2‑D slice viewer, 3‑D Plotly volume, heat‑map / graph visualisations, one‑click downloads
 * **pipeline orchestration by natural‑language** – e.g. `run the pipeline without segmentation`, `enable network`
 * **RAG‑powered Q & A** over both your outputs **and** the UniBrain paper itself
+
+## We are working hard to enhance the tool, and a new version will be released soon.
 
 ---
 

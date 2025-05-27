@@ -25,7 +25,7 @@ It pairs Streamlit’s reactive UI with LangChain’s tool‑calling so you can 
 | **Drag‑&‑drop NIfTI** (`.nii` / `.nii.gz`)  | Files stored under `uploads/<8‑char‑id>/` for easy cleanup                                                  |
 | **Smart reruns**                            | Upload survives every Streamlit rerun – viewers and cards never disappear                                   |
 | **Collapsible output cards**                | Keep the page tidy; expand only what you need                                                               |
-| **2D/3D switch**                        | Fast slice slider **or** Plotly volume (quality slider + colour‑map)                                        |
+| **2D/3D switch**                            | Fast slice slider **or** Plotly volume (quality slider + colour‑map)                                        |
 | **Adjacency exploration**                   | Toggle *heat‑map* or *interactive network graph* (edge‑density slider)                                      |
 | **Download buttons everywhere**             | NIfTI (`.nii.gz`) or raw PyTorch (`.pt`)                                                                    |
 | **Sidebar “⚙️ Pipeline steps”** selector    | Tick/untick *Extraction, Registration, …* before running                                                    |

@@ -10,7 +10,7 @@ You can drop in a NIfTI file, watch every preprocessing step unfold in real time
 It pairs Streamlit’s reactive UI with LangChain’s tool‑calling so you can **see**, **tweak**, and **interrogate** each stage of the pipeline:
 
 * skull‑stripping → affine registration → tissue segmentation → AAL parcellation → graph construction → disease classification
-* fully **interactive**: 2‑D slice viewer, 3‑D Plotly volume, heat‑map / graph visualisations, one‑click downloads
+* fully **interactive**: 2D slice viewer, 3D Plotly volume, heat‑map / graph visualisations, one‑click downloads
 * **pipeline orchestration by natural‑language** – e.g. `run the pipeline without segmentation`, `enable network`
 * **RAG‑powered Q & A** over both your outputs **and** the UniBrain paper itself
 

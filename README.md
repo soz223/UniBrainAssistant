@@ -52,7 +52,7 @@ It pairs Streamlit’s reactive UI with LangChain’s tool‑calling so you can 
 ### 🔬 Method Structure
 
 <p align="center">
-  <img src="./figures/structure.png" alt="End‑to‑end processing pipeline" width="70%"/>
+  <img src="./figures/structure.png" alt="End‑to‑end processing pipeline" width="100%"/>
 </p>
 
 > **No UniBrain weights?**

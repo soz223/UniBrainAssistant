@@ -14,7 +14,7 @@ It pairs Streamlit’s reactive UI with LangChain’s tool‑calling so you can 
 * **pipeline orchestration by natural‑language** – e.g. `run the pipeline without segmentation`, `enable network`
 * **RAG‑powered Q & A** over both your outputs **and** the UniBrain paper itself
 
-## We are working hard to enhance the tool, and a new version will be released soon.
+## ⏳ We are working hard to enhance the tool, and a new version will be released soon.
 
 ---
 

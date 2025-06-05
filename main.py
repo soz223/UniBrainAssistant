@@ -177,7 +177,13 @@ def slice_png(t: torch.Tensor, out: Path):
     Image.fromarray(norm).save(out)
 
 # ╭────────────────── Knowledge RAG ─────────────────────────────────────────╮
+# Example API here. Replace with your own key.
+# Note: This key is for demonstration purposes only and is already expired.
+# Please obtain your own OpenAI API key from https://platform.openai.com/signup
+# and set it in the environment variable OPENAI_API_KEY.
+# You can also set it directly in the code, but this is not recommended for production use.
 OPENAI_API_KEY = "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"
+
 
 # ── colour utils ──────────────────────────────────────────────────────────
 import matplotlib.pyplot as plt

@@ -38,7 +38,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
-# ── utils_adj.py (或直接放到现有文件上方) ─────────────────────────────
+# ── utils_adj ─────────────────────────────
 import torch, networkx as nx
 @st.cache_data
 def load_adj(path: str) -> np.ndarray:

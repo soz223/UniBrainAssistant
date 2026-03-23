@@ -1,20 +1,30 @@
 """
 UniBrain Streamlit App — concise, maintainable refactor
 ======================================================
-(Outputs now appear inside collapsible **expanders** so the page stays tidy. Click to reveal/download.)
+(Outputs appear inside collapsible expanders. Click to reveal/download.)
 
-Author: Songlin Zhao (2025‑05‑01)
+Author: Songlin Zhao (refactor by assistant)
 """
 from __future__ import annotations
 
 # ── Std / 3rd‑party ─────────────────────────────────────────────────────────
-import os, uuid, time, warnings
+import os
+from dotenv import load_dotenv
+load_dotenv()
+import uuid
+import time
+import warnings
 from pathlib import Path
+from typing import Dict, List, Optional
 
-import numpy as np, torch, streamlit as st, SimpleITK as sitk, nibabel as nib
-from PIL import Image
+import numpy as np
+import torch
+import streamlit as st
+import SimpleITK as sitk
+import nibabel as nib
+import matplotlib.pyplot as plt
+import networkx as nx
 from skimage.transform import resize
-import plotly.graph_objects as go
 
 # ── LangChain & tools ───────────────────────────────────────────────────────
 from langchain.agents import initialize_agent, AgentType
@@ -24,91 +34,79 @@ from langchain.document_loaders import PyPDFLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores.faiss import FAISS
 from langchain.schema import AIMessage, HumanMessage, SystemMessage
+from langchain.prompts import (
+    ChatPromptTemplate,
+    SystemMessagePromptTemplate,
+    HumanMessagePromptTemplate,
+)
+from langchain.memory import ConversationBufferWindowMemory
+
+# ── Streamlit page config must be first Streamlit call ──────────────────────
+st.set_page_config(page_title="UniBrain Assistant", layout="centered")
 
 # ── Constants ───────────────────────────────────────────────────────────────
-IMG_SIZE = 96
-DEVICE   = torch.device("cpu")
-ROOT     = Path(__file__).resolve().parent
-ASSETS   = ROOT / "assets"
-PDF_PATH = ROOT / "unibrain.pdf"
-TXT_PATH = ROOT / "extra_knowledge.txt"
-VDB_PATH = ROOT / "extra_knowledge.faiss"
+IMG_SIZE: int = 96
+DEVICE = torch.device("cpu")
+ROOT: Path = Path(__file__).resolve().parent
+ASSETS: Path = ROOT / "assets"
+PDF_PATH: Path = ROOT / "unibrain.pdf"
+TXT_PATH: Path = ROOT / "extra_knowledge.txt"
+VDB_PATH: Path = ROOT / "extra_knowledge.faiss"  # directory name for FAISS
+NIIGZ_MIME = "application/gzip"
 
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-
-# ── utils_adj ─────────────────────────────
-import torch, networkx as nx
+# ╭────────────────────── Utils: adjacency & plotting ───────────────────────╮
 @st.cache_data
 def load_adj(path: str) -> np.ndarray:
-    """CPU-safe加载 torch 存的邻接矩阵并返回 numpy array"""
+    """CPU‑safe load of a torch‑saved adjacency matrix → numpy array."""
     return torch.load(path, map_location="cpu").cpu().numpy()
 
-def adj_to_graph(arr: np.ndarray, thresh: float) -> nx.Graph:
-    """把邻接矩阵转成无向图；自动 squeeze 到 2D"""
-    arr2d = np.squeeze(arr)                # (1,N,N) -> (N,N)
-    if arr2d.ndim != 2:
-        raise ValueError(f"Adj must be 2-D, got shape {arr.shape}")
-    mask = arr2d > thresh
+def adj_to_graph_random(arr: np.ndarray, keep_ratio: float, seed: int = 42) -> nx.Graph:
+    """Randomly retain keep_ratio∈(0,1] of 1‑edges in a binary adjacency matrix."""
+    A = np.squeeze(arr)
+    if A.ndim != 2:
+        raise ValueError(f"Adj must be 2‑D, got shape {A.shape}")
+
+    rng = np.random.default_rng(seed)
+    idx_u = np.triu_indices_from(A, k=1)
+    ones = np.flatnonzero(A[idx_u])  # indices within the 1‑D upper‑tri slice
+
+    mask_u = np.zeros_like(idx_u[0], dtype=bool)
+    if keep_ratio < 1.0:
+        n_keep = max(1, int(len(ones) * keep_ratio)) if len(ones) else 0
+        if n_keep:
+            keep = rng.choice(ones, size=n_keep, replace=False)
+            mask_u[keep] = True
+    else:
+        mask_u[ones] = True
+
+    mask = np.zeros_like(A, dtype=bool)
+    mask[idx_u] = mask_u
+    mask = mask | mask.T
     return nx.from_numpy_array(mask, create_using=nx.Graph)
 
-
-def show_adj_heatmap(arr: np.ndarray):
+def show_adj_heatmap(arr: np.ndarray) -> None:
     st.write("### Heatmap")
-    arr2d = np.squeeze(arr)           # ← 去掉多余维度
-    fig, ax = plt.subplots(figsize=(5,5))
+    arr2d = np.squeeze(arr)
+    fig, ax = plt.subplots(figsize=(5, 5))
     im = ax.imshow(arr2d, aspect="equal")
     fig.colorbar(im, ax=ax, fraction=0.046)
     st.pyplot(fig, clear_figure=True)
 
-import numpy as np
-import networkx as nx
-
-def adj_to_graph_random(arr: np.ndarray, keep_ratio: float, seed: int = 42) -> nx.Graph:
-    """
-    Randomly retain keep_ratio ∈ (0,1] of the 1-edges in a binary adjacency matrix.
-    """
-    A = np.squeeze(arr)                 # (1,N,N) → (N,N)
-    if A.ndim != 2:
-        raise ValueError(f"Adj must be 2-D, got shape {arr.shape}")
-
-    # --- pick edges from upper-triangular to avoid duplicates --------------
-    rng   = np.random.default_rng(seed)
-    idx_u = np.triu_indices_from(A, k=1)          # upper-tri indices
-    ones  = np.flatnonzero(A[idx_u])              # positions of 1-edges
-    if keep_ratio < 1.0:
-        n_keep = max(1, int(len(ones) * keep_ratio))
-        keep_idx = rng.choice(ones, size=n_keep, replace=False)
-        mask_u   = np.zeros_like(idx_u[0], dtype=bool)
-        mask_u[keep_idx] = True
-    else:
-        mask_u = np.zeros_like(idx_u[0], dtype=bool)
-        mask_u[ones] = True
-
-    # --- symmetric binary mask --------------------------------------------
-    mask = np.zeros_like(A, dtype=bool)
-    mask[idx_u] = mask_u
-    mask = mask | mask.T               # make symmetric
-
-    return nx.from_numpy_array(mask, create_using=nx.Graph)
-
-
-def show_adj_graph(arr: np.ndarray, key_prefix: str):
-    st.write("### Network graph ( X % of edges)")
-
-    keep = st.slider(
-        "Keep top-X % edges",
-        5, 100, 20, 5,
-        key=f"{key_prefix}_keep"
-    ) / 100.0
-
+def show_adj_graph(arr: np.ndarray, key_prefix: str) -> None:
+    st.write("### Network graph (X % of edges)")
+    keep = (
+        st.slider(
+            "Keep top‑X % edges", 5, 100, 20, 5, key=f"{key_prefix}_keep"
+        )
+        / 100.0
+    )
     G = adj_to_graph_random(arr, keep_ratio=keep)
-
     if G.number_of_edges() == 0:
         st.info("No edges retained at this percentage.")
         return
-
     pos = nx.spring_layout(G, seed=42, k=1 / np.sqrt(max(G.number_of_nodes(), 1)))
     fig, ax = plt.subplots(figsize=(5, 5))
     nx.draw_networkx_nodes(G, pos, node_size=20, ax=ax)
@@ -117,366 +115,304 @@ def show_adj_graph(arr: np.ndarray, key_prefix: str):
     ax.axis("off")
     st.pyplot(fig, clear_figure=True)
 
-
-
-
-
-# ── Model import (dummy fallback) ───────────────────────────────────────────
+# ╭────────────────────────── Model import (fallback) ───────────────────────╮
 try:
     from model import UniBrain  # type: ignore
     MODEL_OK = True
 except ImportError:  # minimal stub
     class UniBrain(torch.nn.Module):
         def forward(self, *a, **k):
-            b = a[1].shape[0]; shp = (b,1,IMG_SIZE,IMG_SIZE,IMG_SIZE)
+            b = a[1].shape[0]
+            shp = (b, 1, IMG_SIZE, IMG_SIZE, IMG_SIZE)
             rand = lambda: torch.rand(shp, device=a[1].device)
-            eye  = lambda: torch.eye(4, device=a[1].device).unsqueeze(0)
-            return ([rand()]*3, [rand()]*3, [rand()]*3, [eye()]*2, [eye()]*2,
-                    rand(), rand(), rand(), rand(), torch.rand(b,10,10), torch.rand(b,2))
+            eye = lambda: torch.eye(4, device=a[1].device).unsqueeze(0)
+            return (
+                [rand()] * 3,
+                [rand()] * 3,
+                [rand()] * 3,
+                [eye()] * 2,
+                [eye()] * 2,
+                rand(),
+                rand(),
+                rand(),
+                rand(),
+                torch.rand(b, 10, 10),
+                torch.rand(b, 2),
+            )
+
     MODEL_OK = False
 
-# ╭────────────────── Cached loaders ───────────────────────────────────────╮
+# ╭──────────────────────────── Cached loaders ──────────────────────────────╮
 @st.cache_resource(show_spinner="⏳ Loading templates …")
 def load_templates():
     def load(name: str):
         arr = np.load(ASSETS / name).astype(np.float32)
         return torch.from_numpy(arr)[None, None].to(DEVICE)
+
     try:
-        return tuple(load(p) for p in ("tpl_img.npy","tpl_gm.npy","tpl_aal.npy"))
+        return tuple(load(p) for p in ("tpl_img.npy", "tpl_gm.npy", "tpl_aal.npy"))
     except Exception as e:
-        st.error(f"Template error: {e}"); return (None,None,None)
+        st.error(f"Template error: {e}")
+        return (None, None, None)
 
 @st.cache_resource(show_spinner="⏳ Loading UniBrain …")
 def load_model():
     if not MODEL_OK:
-        st.warning("Using dummy model (import failed)"); return None
+        st.warning("Using dummy model (import failed)")
+        return None
     try:
-        m = UniBrain(img_size=IMG_SIZE, ext_stage=3, reg_stage=2, if_pred_aal=True).to(DEVICE)
-        m.load_state_dict(torch.load(ASSETS/"unibrain.pth", map_location=DEVICE)); m.eval(); return m
+        m = UniBrain(
+            img_size=IMG_SIZE, ext_stage=3, reg_stage=2, if_pred_aal=True
+        ).to(DEVICE)
+        m.load_state_dict(torch.load(ASSETS / "unibrain.pth", map_location=DEVICE))
+        m.eval()
+        return m
     except Exception as e:
-        st.error(f"Model load failed: {e}"); return None
+        st.error(f"Model load failed: {e}")
+        return None
 
-REF_TPL, REF_GM, REF_AAL = load_templates(); MODEL = load_model()
+REF_TPL, REF_GM, REF_AAL = load_templates()
+MODEL = load_model()
 
-# ╭────────────────── Utility helpers ───────────────────────────────────────╮
-NIIGZ = "application/gzip"
+# ╭──────────────────────────── Utility helpers ─────────────────────────────╮
+@st.cache_data
+def load_vol(path_str: str) -> np.ndarray:
+    return nib.load(path_str).get_fdata()
 
-def nii_to_torch(p: Path):
+def nii_to_torch(p: Path) -> torch.Tensor:
     arr = sitk.GetArrayFromImage(sitk.ReadImage(str(p))).astype(np.float32)
-    if arr.shape != (IMG_SIZE,)*3:
-        arr = resize(arr,(IMG_SIZE,)*3,order=1,preserve_range=True,anti_aliasing=True)
-    return torch.from_numpy(arr)[None,None].to(DEVICE)
+    if arr.shape != (IMG_SIZE,) * 3:
+        arr = resize(
+            arr, (IMG_SIZE,) * 3, order=1, preserve_range=True, anti_aliasing=True
+        )
+    return torch.from_numpy(arr)[None, None].to(DEVICE)
 
-def save_tensor(t: torch.Tensor, out: Path):
+def save_tensor(t: torch.Tensor, out: Path) -> None:
     t = torch.nan_to_num(t).cpu().squeeze().float()
     sitk.WriteImage(sitk.GetImageFromArray(t.numpy()), str(out))
 
-def slice_png(t: torch.Tensor, out: Path):
-    arr = t.squeeze().cpu().numpy()[t.shape[-1]//2]
-    norm=((arr-arr.min())/(arr.ptp()+1e-6)*255).astype(np.uint8)
-    Image.fromarray(norm).save(out)
+@st.cache_data
+def slice_vol(vol: np.ndarray, z: int) -> np.ndarray:
+    sl = vol[:, :, z].astype(np.float32)
+    rng = sl.ptp() or 1
+    return ((sl - sl.min()) / rng * 255).astype(np.uint8)
 
-# ╭────────────────── Knowledge RAG ─────────────────────────────────────────╮
-# Example API here. Replace with your own key.
-# Note: This key is for demonstration purposes only and is already expired.
-# Please obtain your own OpenAI API key from https://platform.openai.com/signup
-# and set it in the environment variable OPENAI_API_KEY.
-# You can also set it directly in the code, but this is not recommended for production use.
-OPENAI_API_KEY = "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"
-
-
-# ── colour utils ──────────────────────────────────────────────────────────
-import matplotlib.pyplot as plt
-
-def _make_cmap(n: int) -> np.ndarray:
-    """
-    生成 (n,3) float32 LUT，索引 0 为黑，其余按 tab20/20b/20c 轮流。
-    """
-    base = (plt.get_cmap('tab20').colors +
-            plt.get_cmap('tab20b').colors +
-            plt.get_cmap('tab20c').colors) * 50        # 上千色足够
-    return np.vstack([[0, 0, 0], np.array(base[:n-1])]).astype(np.float32)
-
-def roi_slice_to_rgb(label2d: np.ndarray) -> np.ndarray:
-    """
-    label2d: H×W int32, ROI id；背景=0
-    返回  H×W×3 uint8 彩色图（背景黑）
-    """
-    max_id = int(label2d.max())
-    lut = (_make_cmap(max_id + 1) * 255).astype(np.uint8)
-    return lut[label2d]
-
-
-
-
-
+# ╭────────────────────────────── Knowledge RAG ─────────────────────────────╮
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 @st.cache_resource(show_spinner="🔍 Building vector store …")
 def vector_store():
     if not OPENAI_API_KEY:
-        st.error("Missing OpenAI key"); return None
-    docs=[]
-    if PDF_PATH.exists(): docs+=PyPDFLoader(str(PDF_PATH)).load()
-    if TXT_PATH.exists(): docs+=TextLoader(str(TXT_PATH),encoding="utf-8").load()
-    if not docs: st.error("No knowledge docs"); return None
-    chunks=RecursiveCharacterTextSplitter(chunk_size=800,chunk_overlap=150).split_documents(docs)
-    vdb=FAISS.from_documents(chunks,OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)); vdb.save_local(str(VDB_PATH)); return vdb
+        st.error("Missing OpenAI key")
+        return None
+    docs = []
+    if PDF_PATH.exists():
+        docs += PyPDFLoader(str(PDF_PATH)).load()
+    if TXT_PATH.exists():
+        docs += TextLoader(str(TXT_PATH), encoding="utf-8").load()
+    if not docs:
+        st.error("No knowledge docs")
+        return None
+    chunks = RecursiveCharacterTextSplitter(
+        chunk_size=800, chunk_overlap=150
+    ).split_documents(docs)
+    vdb = FAISS.from_documents( # FAISS stores document information as memory.
+        chunks, OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY) # OpenAIEmbeddings converts text to vector embeddings using OpenAI's API, which are then stored in the FAISS vector store for efficient similarity search.
+    )
+    # save_local expects a directory; VDB_PATH is used as a dir name
+    vdb.save_local(str(VDB_PATH))
+    return vdb
+
 def ask_knowledge(q: str) -> str:
     vdb = vector_store()
     if vdb is None:
         return "Knowledge DB unavailable."
 
-    # 正确调用 as_retriever
-    retriever = vdb.as_retriever(search_kwargs={"k": 4})
-    docs = retriever.get_relevant_documents(q)
+    retriever = vdb.as_retriever(search_kwargs={"k": 4})  # retrieve top 4 relevant chunks from the vector store based on the query
+    docs = retriever.get_relevant_documents(q)  # 
     ctx = "\n\n".join(d.page_content for d in docs)
 
-    prompt = (
-        "You are UniBrain-RAG assistant. Use the context only.\n\n"
+    prompt = ( 
+        "You are UniBrain‑RAG assistant. Use the context only.\n\n"
         f"Context:\n{ctx}\n\n"
         f"Q: {q}"
     )
     return ChatOpenAI(
-        openai_api_key=OPENAI_API_KEY,
-        model_name="gpt-4o",
-        temperature=0
+        openai_api_key=OPENAI_API_KEY, model_name="gpt-4o", temperature=0
     ).invoke(prompt).content
 
+KNOWLEDGE_TOOL = Tool(
+    name="ask_unibrain_paper",
+    func=ask_knowledge,
+    description="Answer UniBrain paper questions",
+    return_direct=True,
+)
 
+# ╭──────────────────────────── Inference pipeline ──────────────────────────╮
+CARD = Dict  # type alias for cards
 
-KNOWLEDGE_TOOL=Tool(name="ask_unibrain_paper",func=ask_knowledge,description="Answer UniBrain paper questions",return_direct=True)
+def run_pipeline(inp: Path, work: Path) -> List[CARD]:
+    if None in (MODEL, REF_TPL, REF_GM, REF_AAL):
+        raise RuntimeError("Model/templates not ready")
 
-# ╭────────────────── Inference pipeline ────────────────────────────────────╮
-CARD=dict
-
-def run_pipeline(inp:Path,work:Path)->list[CARD]:
-    if None in (MODEL,REF_TPL,REF_GM,REF_AAL): raise RuntimeError("Model/templates not ready")
-    mov=nii_to_torch(inp)
-    st.info("Running UniBrain …"); t0=time.time()
+    mov = nii_to_torch(inp)
+    st.info("Running UniBrain …")
+    t0 = time.time()
     with torch.no_grad():
-        (striped,masks,warped,theta,theta_i,am_mov,am_ref2,aal_mov,aal_ref2,adj,logits)=MODEL(REF_TPL,mov,REF_GM,REF_AAL,if_train=False)
-    st.success(f"Done in {time.time()-t0:.1f}s")
+        (
+            striped,
+            masks,
+            warped,
+            theta,
+            theta_i,
+            am_mov,
+            am_ref2,
+            aal_mov,
+            aal_ref2,
+            adj,
+            logits,
+        ) = MODEL(REF_TPL, mov, REF_GM, REF_AAL, if_train=False)
+    st.success(f"Done in {time.time() - t0:.1f}s")
 
-    nii_dir,pt_dir=(work/"nii",work/"pt"); nii_dir.mkdir(parents=True,exist_ok=True); pt_dir.mkdir(exist_ok=True)
-    cards: list[CARD]=[]
-    def nii_card(t,name,note=""):
-        out=nii_dir/f"{name}.nii.gz"; save_tensor(t,out)
-        cards.append({"step":name.replace("_"," ").title(),"nifti_path":out,"explanation":note}); return out
+    nii_dir, pt_dir = (work / "nii", work / "pt")
+    nii_dir.mkdir(parents=True, exist_ok=True)
+    pt_dir.mkdir(parents=True, exist_ok=True)
 
-    prob=torch.softmax(logits,1)[0]; cls,conf=int(prob.argmax()),float(prob.max())
-    torch.save(logits.cpu(),pt_dir/"logits.pt")
-    cards.append({"step":"Classification","metrics":{"class":cls,"probability":conf},"explanation":f"Predicted **{cls}** (p={conf:.3f})","file_path":pt_dir/"logits.pt"})
+    cards: List[CARD] = []
 
-    nii_card(torch.argmax(am_mov,1),"am_seg","Anatomical mask")
-    nii_card(torch.argmax(aal_mov,1),"aal_seg","AAL labels")
-    nii_card(am_ref2,"am_ref2mov","Template ANAT→input")
-    nii_card(aal_ref2,"aal_ref2mov","Template AAL→input")
+    def nii_card(t: torch.Tensor, name: str, note: str = "") -> Path:
+        out = nii_dir / f"{name}.nii.gz"
+        save_tensor(t, out)
+        cards.append(
+            {"step": name.replace("_", " ").title(), "nifti_path": out, "explanation": note}
+        )
+        return out
 
-    for i,(m,s) in enumerate(zip(masks,striped),1):
-        nii_card(m,f"mask{i}"); nii_card(s,f"strip{i}")
-    for i,w in enumerate(warped,1):
-        nii_card(w,f"warped{i}")
+    prob = torch.softmax(logits, 1)[0]
+    cls, conf = int(prob.argmax()), float(prob.max())
 
-    for lbl,obj in {"theta":theta,"theta_inv":theta_i,"adj":adj}.items():
-        p=pt_dir/f"{lbl}.pt"; torch.save(obj,p); cards.append({"step":lbl,"file_path":p})
+    cls_name = {0: "Healthy", 1: "AD"}.get(cls, f"Class {cls}")
+    torch.save(logits.cpu(), pt_dir / "logits.pt")
+    cards.append(
+        {
+            "step": "Prediction",
+            "metrics": {"class": cls, "probability": conf},
+            "explanation": f"Predicted **{cls_name}** (p={conf:.3f})",
+            "file_path": pt_dir / "logits.pt",
+        }
+    )
+
+    nii_card(torch.argmax(am_mov, 1), "am_seg", "Anatomical mask")
+    nii_card(torch.argmax(aal_mov, 1), "aal_seg", "AAL labels")
+    nii_card(am_ref2, "am_ref2mov", "Template ANAT→input")
+    nii_card(aal_ref2, "aal_ref2mov", "Template AAL→input")
+
+    for i, (m, s) in enumerate(zip(masks, striped), 1):
+        nii_card(m, f"mask{i}")
+        nii_card(s, f"strip{i}")
+    for i, w in enumerate(warped, 1):
+        nii_card(w, f"warped{i}")
+
+    for lbl, obj in {"theta": theta, "theta_inv": theta_i, "adj": adj}.items():
+        p = pt_dir / f"{lbl}.pt"
+        torch.save(obj, p)
+        cards.append({"step": lbl, "file_path": p})
 
     return cards
 
-RUN_TOOL=Tool(name="run_unibrain_inference",description="Run/rerun UniBrain on uploaded file",func=lambda _: "❗ No file" if "upload_path" not in st.session_state else _run_unibrain())
+# Tool to trigger pipeline from the agent
 
-def _run_unibrain():
-    if st.session_state.get("pipeline_done"): return "✅ Already done"
+def _run_unibrain() -> str:
+    if st.session_state.get("pipeline_done"):
+        return "✅ Already done"
     try:
-        st.session_state.cards=run_pipeline(Path(st.session_state.upload_path),Path(st.session_state.upload_path).parent)
-        st.session_state.pipeline_done=True; return "✅ Inference complete"
-    except Exception as e: return f"🚨 Failure: {e}"
+        st.session_state.cards = run_pipeline(
+            Path(st.session_state.upload_path), Path(st.session_state.upload_path).parent
+        )
+        st.session_state.pipeline_done = True
+        return "✅ Inference complete"
+    except Exception as e:
+        return f"🚨 Failure: {e}"
 
-# # ╭────────────────── Agent init ─────────────────────────────────────────────╮
-# agent=None
-# if OPENAI_API_KEY:
-#     try:
-#         agent=initialize_agent(agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,tools=[RUN_TOOL,KNOWLEDGE_TOOL],llm=ChatOpenAI(openai_api_key=OPENAI_API_KEY,model_name="gpt-4o",temperature=0),max_iterations=5,verbose=False)
-#     except Exception as e: st.error(f"Agent init failed: {e}")
-from pathlib import Path
-from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
-from langchain.memory import ConversationBufferWindowMemory
+RUN_TOOL = Tool(
+    name="run_unibrain_inference",
+    description="Run/rerun UniBrain on uploaded file",
+    func=lambda _: "❗ No file" if "upload_path" not in st.session_state else _run_unibrain(),
+)
 
-# ——— 1. 读取外部 Prompt 文件 —————————————————————————————
+# ╭──────────────────────────── Agent initialization ────────────────────────╮
 PROMPT_PATH = ROOT / "prompts" / "unibrain_system_prompt.md"
-SYSTEM_PROMPT = PROMPT_PATH.read_text(encoding="utf-8")
+SYSTEM_PROMPT = PROMPT_PATH.read_text(encoding="utf-8") if PROMPT_PATH.exists() else (
+    "You are UniBrain assistant."
+)
 
-# ——— 2. 构造带 system + human 的 PromptTemplate —————————————————
-prompt_template = ChatPromptTemplate.from_messages([
-    SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT),
-    HumanMessagePromptTemplate.from_template("{input}")
-])
+prompt_template = ChatPromptTemplate.from_messages(
+    [
+        SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT),
+        HumanMessagePromptTemplate.from_template("{input}"),
+    ]
+)
 
-# ——— 3. 初始化 Agent 时注入 prompt 和 memory —————————————————
+
+
+
 agent = None
 if OPENAI_API_KEY:
     try:
         llm = ChatOpenAI(
-            openai_api_key=OPENAI_API_KEY,
-            model_name="gpt-4o-mini",
-            temperature=0
+            openai_api_key=OPENAI_API_KEY, model_name="gpt-4o-mini", temperature=0
         )
-        memory = ConversationBufferWindowMemory(
-            memory_key="chat_history",
-            return_messages=True
+        memory = ConversationBufferWindowMemory(  # this part trunk instead of compact history. 
+            memory_key="chat_history", return_messages=True
         )
         agent = initialize_agent(
             agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
             tools=[RUN_TOOL, KNOWLEDGE_TOOL],
             llm=llm,
-            prompt=prompt_template,           
-            memory=memory,                    
+            prompt=prompt_template,  # keep original pattern
+            memory=memory,
             max_iterations=5,
             verbose=False,
-            handle_parsing_errors=True
+            handle_parsing_errors=True,
         )
-        # st.write("🔍 Final agent.prompt:", agent.prompt or agent.agent.prompt_template)
-
     except Exception as e:
         st.error(f"Agent init failed: {e}")
         st.exception(e)
 
+# ╭────────────────────────────── UI: viewers ───────────────────────────────╮
 
-
-
-
-# ╭────────────────── UI helpers ─────────────────────────────────────────────╮
-@st.cache_data
-def slice_vol(vol,z): sl=vol[:,:,z].astype(np.float32); rng=sl.ptp() or 1; return ((sl-sl.min())/rng*255).astype(np.uint8)
-
-def viewer(nifti: Path, title: str, key: str, *, color: bool = False):
-    vol = nib.load(str(nifti)).get_fdata()
+def viewer(nifti: Path, title: str, key: str, *, color: bool = False) -> None:
+    vol = load_vol(str(nifti))
     z_max = vol.shape[2] - 1
     z = st.slider(f"{title} – slice", 0, z_max, z_max // 2, key=key)
-
-    slice2d = vol[:, :, z]
-    if color:  # AAL segmentation ➜ 彩色
-        lab = slice2d.astype(np.int32)
-        lab[lab < 1] = 0          # 强制背景=0
-        st.image(
-            roi_slice_to_rgb(lab),   # LUT[0] 已是纯黑
-            caption=f"{title} (z={z})",
-            use_container_width=True,
-            clamp=True
-        )
-
-    else:
-        st.image(slice_vol(vol, z), caption=f"{title} (z={z})",
-                 use_container_width=True, clamp=True)
+    st.image(slice_vol(vol, z), caption=f"{title} (z={z})", use_container_width=True, clamp=True)
 
 
-# ── 1. 重写 vol_fig：只接受参数，不调 st ────────────────────────────
-def vol_fig(arr: np.ndarray, ds: int, colourscale: str) -> go.Figure:
-    # 降采样
-    arr_ds = arr[::ds, ::ds, ::ds]
-    # 坐标
-    x, y, z = np.mgrid[
-        :arr_ds.shape[0],
-        :arr_ds.shape[1],
-        :arr_ds.shape[2],
-    ]
-    # 阈值
-    nonmin = arr_ds[arr_ds > arr_ds.min()]
-    imin, imax = (np.percentile(nonmin, (5, 98))
-                  if nonmin.size else (0, 1))
 
-    fig = go.Figure(
-        go.Volume(
-            x=x.ravel(),
-            y=y.ravel(),
-            z=z.ravel(),
-            value=arr_ds.ravel(),
-            isomin=imin,
-            isomax=imax,
-            opacity=0.2,
-            opacityscale=[
-                [0, 0],
-                [0.1, 0.05],
-                [0.3, 0.1],
-                [0.6, 0.3],
-                [0.8, 0.5],
-                [1, 0.7],
-            ],
-            surface_count=17,
-            colorscale=colourscale,
-        )
-    )
-    fig.update_layout(
-        scene=dict(aspectmode="data"),
-        margin=dict(l=0, r=0, t=30, b=0),
-        height=500,
-        title=dict(text="3-D Volume Preview", x=0.5),
-    )
-    return fig
-
-
-# ── 2. 更新输入预览：给 input 也加唯一 key ────────────────────────
 def show_input_preview(in_path: Path) -> None:
     st.subheader("Input preview")
-    viewer(in_path, "Input", "prev")  # 保持原来的 2D viewer
+    try:
+        from input_preview import real_nifti_viewer
+        real_nifti_viewer(in_path, "Input Brain Volume", "input_preview", color=False)
+    except ImportError:
+        viewer(in_path, "Input", "prev")
 
-    # 3D 渲染参数：唯一 key
-    ds_key   = "quality_input"
-    cmap_key = "cmap_input"
-    ds_in = st.radio(
-        "Quality (↓ faster)",
-        [4, 3, 2, 1],
-        index=0,
-        horizontal=True,
-        key=ds_key,
-    )
-    cmap_in = st.selectbox(
-        "Colormap",
-        ["Greys", "Viridis", "Hot", "Rainbow", "Jet"],
-        index=1,
-        key=cmap_key,
-    )
+# ╭────────────────────────────── File handling ─────────────────────────────╮
 
-    arr = nib.load(str(in_path)).get_fdata()
-    fig = vol_fig(arr, ds=ds_in, colourscale=cmap_in)
-    st.plotly_chart(fig, use_container_width=True, key="vol_input")
-
-
-# def vol_fig(arr:np.ndarray):
-#     ds=st.radio("Quality (↓ faster)",[4,3,2,1],index=1,horizontal=True)
-#     arr=arr[::ds,::ds,::ds]
-#     x,y,z=np.mgrid[:arr.shape[0],:arr.shape[1],:arr.shape[2]]
-#     nonmin=arr[arr>arr.min()]; imin,imax=np.percentile(nonmin,(5,98)) if nonmin.size else (0,1)
-#     return go.Figure(go.Volume(x=x.ravel(),y=y.ravel(),z=z.ravel(),value=arr.ravel(),isomin=imin,isomax=imax,opacity=0.2,opacityscale=[[0,0],[0.1,0.05],[0.3,0.1],[0.6,0.3],[0.8,0.5],[1,0.7]],surface_count=17,colorscale="Greys"))
-
-# ╭────────────────── Streamlit main ────────────────────────────────────────╮
-st.set_page_config(page_title="UniBrain Agent",layout="centered")
-
-st.title("🧠 UniBrain Assistant")
-for k,v in {"messages":[],"pipeline_done":False}.items(): st.session_state.setdefault(k,v)
-
-# ── constants you already have ──────────────────────────────────────────────
-NIIGZ = "application/gzip"
-
-# ---------------------------------------------------------------------------#
-# 0. 工具：判定是否为 parcellation（决定彩色 / 灰阶）                        #
-# ---------------------------------------------------------------------------#
 def is_parcellation(step: str) -> bool:
-    step = step.lower()
-    return any(k in step for k in ("aal_seg", "aal_ref2mov"))
+    step_l = step.lower()
+    return any(k in step_l for k in ("aal_seg", "aal_ref2mov"))
 
-# ---------------------------------------------------------------------------#
-# 1. 文件上传 & 落盘                                                          #
-# ---------------------------------------------------------------------------#
-def handle_upload() -> Path | None:
+
+def handle_upload() -> Optional[Path]:
     """Return local Path of uploaded NIfTI, or None if nothing yet."""
     upload = st.file_uploader("Upload NIfTI (.nii/.nii.gz)", ["nii", "nii.gz"])
     if not upload:
-        # st.info("Upload a NIfTI file to begin.")
         return None
 
-    # 新文件 → 生成 job 目录并保存
+    # If a new file is uploaded, make a fresh job dir and save it
     if st.session_state.get("fname") != upload.name:
-        job_id  = uuid.uuid4().hex[:8]
+        job_id = uuid.uuid4().hex[:8]
         workdir = Path("uploads") / job_id
         workdir.mkdir(parents=True, exist_ok=True)
 
@@ -484,40 +420,24 @@ def handle_upload() -> Path | None:
         up_path.write_bytes(upload.getbuffer())
 
         st.session_state.update(
-            fname          = upload.name,
-            upload_path    = str(up_path),
-            work_dir       = str(workdir),
-            pipeline_done  = False,
-            cards          = []
+            fname=upload.name,
+            upload_path=str(up_path),
+            work_dir=str(workdir),
+            pipeline_done=False,
+            cards=[],
         )
         st.success(f"Saved → {up_path}")
 
     return Path(st.session_state.upload_path)
 
-# ---------------------------------------------------------------------------#
-# 2. 输入预览（中间切片 + 3-D 体渲染）                                        #
-# ---------------------------------------------------------------------------#
-def show_input_preview(in_path: Path) -> None:
-    st.subheader("Input preview")
-    viewer(in_path, "Input", "prev")                      # 2-D slice viewer
-    vol = nib.load(str(in_path)).get_fdata()
-    # st.plotly_chart(vol_fig(vol), use_container_width=True)
-    st.plotly_chart(vol_fig(vol, ds=2, colourscale="Greys"), use_container_width=True)
 
-# ---------------------------------------------------------------------------#
-# 3. “Run UniBrain” 按钮                                                      #
-# ---------------------------------------------------------------------------#
 def run_inference_button(in_path: Path) -> None:
     if st.button("Run UniBrain", disabled=st.session_state.pipeline_done):
-        st.session_state.cards = run_pipeline(
-            in_path, Path(st.session_state.work_dir)
-        )
+        st.session_state.cards = run_pipeline(in_path, Path(st.session_state.work_dir))
         st.session_state.pipeline_done = True
         st.rerun()
 
-# ---------------------------------------------------------------------------#
-# 4. 结果展示：折叠卡片 + 下载                                                #
-# ---------------------------------------------------------------------------#
+
 def show_outputs() -> None:
     if not st.session_state.get("pipeline_done"):
         return
@@ -527,144 +447,117 @@ def show_outputs() -> None:
         with st.expander(card["step"], expanded=False):
             st.write(card.get("explanation", ""))
 
-            # ── ① 分类指标 ───────────────────────────────────────────────
+            # ① Classification metrics
             if m := card.get("metrics"):
                 c1, c2 = st.columns(2)
-                c1.metric("Class",       m["class"])
+                c1.metric("Class", m["class"])
                 c2.metric("Confidence", f"{m['probability']:.3f}")
 
-            # ── ② 如果有 NIfTI，就给个显示模式切换 ──────────────────────
+            # ② NIfTI display with Real Data Slices
+            p = card.get("nifti_path")
+            if p and Path(p).exists():
+                try:
+                    from input_preview import real_nifti_viewer
+                    real_nifti_viewer(Path(p), card["step"], f"out_{i}", color=is_parcellation(card["step"]))
+                except ImportError:
+                    viewer(Path(p), card["step"], f"out_{i}", color=is_parcellation(card["step"]))
 
-            if (p := card.get("nifti_path")) and Path(p).exists():
-                arr = nib.load(str(p)).get_fdata()
-
-                view_mode = st.radio(
-                    "Display mode",
-                    ["2D slice", "3D volume"],
-                    index=0,
-                    key=f"view_{i}",
-                )
-
-                if view_mode == "2D slice":
-                    viewer(
-                        Path(p),
-                        card["step"],
-                        f"out_{i}",
-                        color=is_parcellation(card["step"]),
-                    )
-                else:
-                    # 先选质量下采样
-                    ds_i = st.radio(
-                        "Quality (↓ faster)",
-                        [4, 3, 2, 1],
-                        index=1,
-                        horizontal=True,
-                        key=f"quality_{i}",
-                    )
-                    # 再选调色板
-                    cmap_i = st.selectbox(
-                        "Colormap",
-                        ["Greys", "Viridis", "Hot", "Rainbow", "Jet"],
-                        index=1,
-                        key=f"cmap_{i}",
-                    )
-                    fig = vol_fig(arr, ds=ds_i, colourscale=cmap_i)
-                    st.plotly_chart(fig, use_container_width=True, key=f"vol_{i}")
-
-                # 下载按钮
                 st.download_button(
                     "Download NIfTI",
                     Path(p).read_bytes(),
                     file_name=Path(p).name,
-                    mime=NIIGZ,
-                    key=f"dl_{i}"
+                    mime=NIIGZ_MIME,
+                    key=f"dl_{i}",
                 )
-            # ── ②-b  若是 adj.pt 就显示 Heatmap / Graph ──────────────────
-            elif (fp := card.get("file_path")) and "adj" in fp.stem:
-                arr = load_adj(str(fp))
+
+            # ②‑b Adjacency heatmap/graph toggle
+            elif (fp := card.get("file_path")) and Path(fp).exists() and Path(fp).stem == "adj":
+                arr_adj = load_adj(str(fp))
                 view_mode = st.radio(
-                    "Adjacency view",
-                    ["Heatmap", "Graph"],
-                    index=0,
-                    key=f"adj_view_{i}"
+                    "Adjacency view", ["Heatmap", "Graph"], index=0, key=f"adj_view_{i}"
                 )
                 if view_mode == "Heatmap":
-                    show_adj_heatmap(arr)
+                    show_adj_heatmap(arr_adj)
                 else:
-                    show_adj_graph(arr, key_prefix=f"adj_{i}")
+                    show_adj_graph(arr_adj, key_prefix=f"adj_{i}")
 
-                # 下载按钮
                 st.download_button(
                     "Download adj.pt",
                     Path(fp).read_bytes(),
                     file_name=Path(fp).name,
                     mime="application/octet-stream",
-                    key=f"dl_adj_{i}"
+                    key=f"dl_adj_{i}",
                 )
 
-            # ── ③ 其它二进制输出 ───────────────────────────────────────
+            # ③ Other binary outputs
             if (fp := card.get("file_path")) and Path(fp).exists():
                 st.download_button(
                     "Download data",
                     Path(fp).read_bytes(),
                     file_name=Path(fp).name,
                     mime="application/octet-stream",
-                    key=f"dlf_{i}"
+                    key=f"dlf_{i}",
                 )
 
-            
 
+# main program starts here
 
-# ---------------------------------------------------------------------------#
-# 🏃 主流程：一步一函数                                                       #
-# ---------------------------------------------------------------------------#
+# ╭────────────────────────────── Main app ──────────────────────────────────╮
+st.title("🧠 UniBrain Assistant")
+for k, v in {"messages": [], "pipeline_done": False}.items():
+    st.session_state.setdefault(k, v)
+
 in_path = handle_upload()
 if in_path:
-    show_input_preview(in_path)
-    run_inference_button(in_path)
-    show_outputs()
+    show_input_preview(in_path) # visualzation image with notes
+    run_inference_button(in_path) # inference button
+    show_outputs() # outputs with inference
 
 
-# ╭────────────────── Chat area ──────────────────────────────────────────────╮
-st.divider(); st.subheader("Chat with UniBrain Assistant")
+
+
+# ╭────────────────────────────── Chat area ─────────────────────────────────╮
+st.divider()
+st.subheader("Chat with UniBrain Assistant")
 for m in st.session_state.messages:
-    with st.chat_message(m["role"]): st.markdown(m["content"])
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
 
+
+# if agent is defined 
 if agent:
-    if q:=st.chat_input("Ask about UniBrain …"):
-        st.session_state.messages.append({"role":"user","content":q}); st.rerun()
+    # 1st if: If the user submits a new chat input, append it to the chat history and rerun the app.
+    if q := st.chat_input("Ask about UniBrain …"):
+        st.session_state.messages.append({"role": "user", "content": q})
+        st.rerun() # add history along with current question to agent input
 
-    if agent and st.session_state.messages and st.session_state.messages[-1]["role"]=="user":
-        q   = st.session_state.messages[-1]["content"]
-        ctx = (f"File: {st.session_state.upload_path}"
-            if "upload_path" in st.session_state else "No file loaded.")
+    # 2nd if: If the last message is from the user, process it with the agent and display the assistant's response.
+    if st.session_state.messages and st.session_state.messages[-1]["role"] == "user": # expalin: check if there are any messages and if the last one is from the user
+        q = st.session_state.messages[-1]["content"]
+        ctx = f"File: {st.session_state.upload_path}" if "upload_path" in st.session_state else "No file loaded."
 
-        # 1) build the chat_history as before
-        hist=[]
-        msgs=st.session_state.messages[:-1]
-        for i in range(0, len(msgs)-1, 2):
-            if msgs[i]["role"]=="user" and msgs[i+1]["role"]=="assistant":
+        # Rebuild a compact chat history
+        hist: List[HumanMessage | AIMessage] = []
+        msgs = st.session_state.messages[:-1]
+        for i in range(0, len(msgs) - 1, 2):
+            if msgs[i]["role"] == "user" and msgs[i + 1]["role"] == "assistant":
                 hist += [
-                HumanMessage(content=msgs[i]["content"]),
-                AIMessage   (content=msgs[i+1]["content"])
+                    HumanMessage(content=msgs[i]["content"]),
+                    AIMessage(content=msgs[i + 1]["content"]),
                 ]
 
-        # 2) ALWAYS prepend your SYSTEM_PROMPT as a SystemMessage
-        full_history = [ SystemMessage(content=SYSTEM_PROMPT) ] + hist
-
-        # 3) Now send your user as the last message
-        full_history.append( HumanMessage(content=f"{q}\n\nContext: {ctx}") )
-
+        full_history: List[SystemMessage | HumanMessage | AIMessage] = [
+            SystemMessage(content=SYSTEM_PROMPT)
+        ] + hist
+        full_history.append(HumanMessage(content=f"{q}\n\nContext: {ctx}"))
+        # Insert the assistant's reply into the chat history before displaying
         with st.chat_message("assistant"), st.spinner("Thinking…"):
             try:
-                # use agent.invoke so tools still work
-                result = agent.invoke({
-                    "input": full_history  # passes in messages directly
-                })
+                result = agent.invoke({"input": full_history})  # keep original behavior
                 out = result.get("output", str(result))
             except Exception as e:
                 out = f"Agent error: {e}"
-            st.session_state.messages.append({"role":"assistant","content":out})
+            st.session_state.messages.append({"role": "assistant", "content": out})
             st.rerun()
 else:
     st.info("Agent disabled (no API key)")

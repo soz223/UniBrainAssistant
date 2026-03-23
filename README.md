@@ -130,6 +130,28 @@ See `requirements.txt` for exact versions.
 
 ---
 
+## 🔬 Method Structure
+
+<p align="center">
+  <img src="./figures/structure.png" alt="End‑to‑end processing pipeline" width="100%"/>
+</p>
+
+---
+
+## 🖼️ Demo
+
+<p align="center">
+  <img src="./figures/demo1.png" alt="Upload & preprocessing" width="100%"/>
+  <img src="./figures/demo2.png" alt="Interactive slice viewer" width="100%"/>
+  <img src="./figures/demo3.png" alt="3‑D volumetric viewer" width="100%"/>
+</p>
+<p align="center">
+  <img src="./figures/demo4.png" alt="Graph visualisation" width="100%"/>
+  <img src="./figures/demo5.png" alt="Chat‑driven control" width="100%"/>
+</p>
+
+---
+
 ## 📝 Contributing
 
 PRs are welcome! Interesting directions:
